@@ -143,43 +143,25 @@ This is the literal `<owner>/<repo>` string the templates will be rewritten with
 - Else if `AGENTS.md` exists, edit it.
 - If neither exists, ask the user which one to create — don't pick for them.
 
+**Import exception.** If `CLAUDE.md` exists only to import `AGENTS.md` (its content is essentially `@AGENTS.md`), then `AGENTS.md` is the real instructions file and `CLAUDE.md` is just a pointer. Edit `AGENTS.md` — the block reaches Claude sessions through the import either way, and the content stays in one place. Confirm with the user when it's a close call rather than guessing.
+
 Never create the other when one already exists.
 
 If an `## Agent skills` block already exists in the chosen file, update its contents in-place rather than appending. Don't overwrite user edits to surrounding sections.
 
 #### 4c. Write the `## Agent skills` block
 
+Keep this block minimal. The chosen memory file (`CLAUDE.md` / `AGENTS.md`) loads into **every** agent session, so cost-per-token is highest here. Everything the block could spell out — the label vocabulary, the integration-branch rule, the domain layout, the initiative lifecycle, the output format — is already written once in `docs/agents/*` and restated in `docs/agents/README.md`, and every consuming skill (`/triage`, `/execute`, `/ship`, `/decompose`, `/status`, `/check`, `/audit`, `/to-spec`) links the relevant `docs/agents/*` doc and the ADR directly by relative path. An in-file copy is pure duplication that drifts. The block's only job is to point a fresh agent at the README and name the tracker.
+
+Default to the bare pointer:
+
 ```markdown
 ## Agent skills
 
-The engineering skill set under `~/.claude/skills/` (or wherever the `skills@latest` CLI installed them) assumes the conventions documented under [docs/agents/](docs/agents/). The system overview lives in [docs/agents/README.md](docs/agents/README.md); read it first.
-
-### Issue tracker
-
-Specs (initiatives, features, slices, tasks) live as GitHub issues on `<owner>/<repo>`; workflow skills shell out to `gh issue *`. See [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md).
-
-### Triage labels
-
-[One-line summary of the label vocabulary, including the `cleanup` category]. The size-tier strings (`size:initiative`, `size:feature`, `size:slice`, `size:task`) are fixed and grep'd by the workflow skills — do not rename. See [docs/agents/triage-labels.md](docs/agents/triage-labels.md).
-
-### Integration branches
-
-Per [ADR-NNNN](docs/adr/NNNN-issues-branch-from-parent-integration-branch.md) (substitute the actual number chosen at write time), a spec's working branch is its parent's integration branch, recursing upward with `main` as the terminal fallback. `/triage` declares the integration branch name on `size:feature` and `size:slice` specs (`feature/issue-<N>-<slug>` and `slice/issue-<N>-<slug>` respectively); `/execute` creates the branch lazily on first use; `/ship` promotes it upward at the slice and feature tiers. Initiatives have no integration branch.
-
-### Domain docs
-
-[One-line summary of layout — "single-context" or "multi-context"]. See [docs/agents/domain.md](docs/agents/domain.md).
-
-### Initiative lifecycle
-
-Initiatives differ from features and slices in that they have no integration branch and close manually. See [docs/agents/lifecycle-initiative.md](docs/agents/lifecycle-initiative.md).
-
-### End-of-run output
-
-Every workflow skill that produces a durable artifact ends with the three-block template (outcome, links, next step) in [docs/agents/output-format.md](docs/agents/output-format.md). Voice rules apply to all skills, including the report-is-output exceptions.
+This repo uses the tdog engineering skill set; its conventions live under [docs/agents/](docs/agents/) — read [docs/agents/README.md](docs/agents/README.md) first. Specs are GitHub issues on `<owner>/<repo>`.
 ```
 
-The bracketed summaries in the Triage labels and Domain docs subsections get filled in based on the user's Section A / B answers.
+Substitute `<owner>/<repo>` with the resolved value. The Section A / B answers don't change the block — they're recorded in `docs/agents/triage-labels.md` and `docs/agents/domain.md`, which the README and skills already reach. Only expand the block beyond this pointer if the user explicitly asks for a fuller in-file summary; otherwise the bare version is correct for both `CLAUDE.md` and `AGENTS.md`.
 
 #### 4d. Write the docs
 
@@ -233,7 +215,7 @@ After a fresh run in a previously-unconfigured repo, all of the following should
 
 1. `ls docs/agents/` shows `README.md`, `issue-tracker.md`, `triage-labels.md`, `output-format.md`, `lifecycle-initiative.md`, `domain.md`.
 2. `ls docs/adr/` includes `NNNN-issues-branch-from-parent-integration-branch.md` (where `NNNN` is `0001` or the next free slot if `0001` was already taken), with the references in `docs/agents/README.md` and `docs/agents/issue-tracker.md` matching the chosen number.
-3. `CLAUDE.md` (or `AGENTS.md`) has an `## Agent skills` block linking to each doc plus a paragraph on the integration-branch convention.
+3. `CLAUDE.md` (or `AGENTS.md`) has a bare `## Agent skills` block that points at `docs/agents/README.md` and names the tracker — no inline restatement of labels, branches, domain, lifecycle, or output format.
 4. `grep -rn "<owner>/<repo>" docs/` returns nothing.
 5. `gh label list` includes all seven state labels, `in-progress`, the four `size:*` labels, and the three category labels (including `cleanup`).
 6. `/triage` and `/execute` against fresh specs run without complaining about missing doc paths.
