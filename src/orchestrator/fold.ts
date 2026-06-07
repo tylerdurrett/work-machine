@@ -4,7 +4,7 @@ import type {
   RunState,
   StepState,
 } from '../domain/index.js';
-import type { WorkflowDefinition } from '../workflow/index.js';
+import { isGateStep, type WorkflowDefinition } from '../workflow/index.js';
 
 /**
  * Pure event-sourced fold: replay an `events.jsonl` log into a {@link RunState}
@@ -15,7 +15,7 @@ import type { WorkflowDefinition } from '../workflow/index.js';
  * the events already in the log. It is the rebuildable cache behind `run.yaml`:
  * given the same workflow + log it always produces the same state.
  *
- * Step lifecycle is derived purely from events:
+ * A `script` step's lifecycle is derived purely from events:
  *
  *   step_dispatched → running → step_succeeded (succeeded) | step_failed (failed)
  *
@@ -25,10 +25,23 @@ import type { WorkflowDefinition } from '../workflow/index.js';
  * therefore treats "dispatched, no terminal event" as "not yet attempted" so a
  * later `tick` re-dispatches it (AC: crash-mid-step replay).
  *
+ * A `gate` (review) step runs no command; its lifecycle is driven by gate facts:
+ *
+ *   gate_opened → awaiting_review → gate_decided →
+ *     approve          → approved
+ *     request_changes  → changes_requested, and the steps it guards (its
+ *                        transitive `needs` back to the previous gate) plus the
+ *                        gate itself reset to `pending`, so the work re-runs and
+ *                        the *same* gate re-opens (ADR-0004 — one card per gate).
+ *     reject           → rejected, and the run folds to `rejected`.
+ *
+ * A `command_received` is recorded as a canonical fact but advances no state on
+ * its own: only a `gate_decided` (named by `decide`'s pure validation) moves a
+ * gate. An invalid command therefore stays audit-only here.
+ *
  * The fold never builds shell strings or knows path layout — it only records the
  * resolved `command` already present on `step_dispatched` and the artifacts
- * already recorded on `step_succeeded`. Gate events are deliberately absent from
- * the gateless subset and arrive in a later slice.
+ * already recorded on `step_succeeded`.
  */
 
 /** Seed a {@link StepState} in its pre-dispatch resting state. */
@@ -131,6 +144,55 @@ export function foldRunState(
         state.status = 'failed';
         break;
       }
+      case 'gate_opened': {
+        state.openGate = { gateId: event.gateId, stepId: event.stepId };
+        steps[event.stepId] = {
+          ...(steps[event.stepId] ?? pendingStep(event.stepId)),
+          status: 'awaiting_review',
+        };
+        break;
+      }
+      case 'command_received': {
+        // Audit-only: a command is a canonical fact but never advances state on
+        // its own. Only the `gate_decided` that `decide`'s pure validation names
+        // (first-valid-wins) moves the gate; an invalid command leaves no trace
+        // in the derived state.
+        break;
+      }
+      case 'gate_decided': {
+        const stepId = state.openGate?.stepId;
+        delete state.openGate;
+        if (stepId === undefined) break;
+
+        if (event.decision === 'request_changes') {
+          // Loop the gate: reset the work it guards (its transitive `needs` back
+          // to the previous gate) so it re-runs consuming the recorded feedback,
+          // and reset the gate step itself so the *same* gate re-opens once the
+          // work re-succeeds (ADR-0004 — one card per gate). The decision and
+          // feedback are recorded on the gate step's resting (`pending`) state
+          // for projection.
+          for (const guarded of guardedWorkSteps(workflow, stepId)) {
+            steps[guarded] = pendingStep(guarded);
+          }
+          steps[stepId] = {
+            ...pendingStep(stepId),
+            decision: event.decision,
+            ...(event.feedback !== undefined && { feedback: event.feedback }),
+          };
+          break;
+        }
+
+        // approve | reject: a terminal verdict on the gate step.
+        steps[stepId] = {
+          ...(steps[stepId] ?? pendingStep(stepId)),
+          status: event.decision === 'approve' ? 'approved' : 'rejected',
+          decision: event.decision,
+        };
+        if (event.decision === 'reject') {
+          state.status = 'rejected';
+        }
+        break;
+      }
     }
   }
 
@@ -143,6 +205,33 @@ export function foldRunState(
   }
 
   return state;
+}
+
+/**
+ * The work steps a gate guards: its transitive `needs` predecessors, walking
+ * back through `script` steps and stopping at any prior `gate` (that earlier
+ * work belongs to the earlier card, ADR-0004). These are the steps a
+ * `request_changes` loops back to `pending` so they re-run with feedback.
+ */
+function guardedWorkSteps(
+  workflow: WorkflowDefinition,
+  gateStepId: string,
+): string[] {
+  const stepById = new Map(workflow.steps.map((s) => [s.id, s]));
+  const guarded = new Set<string>();
+  const queue = [...(stepById.get(gateStepId)?.needs ?? [])];
+
+  while (queue.length > 0) {
+    const id = queue.shift();
+    if (id === undefined || guarded.has(id)) continue;
+    const step = stepById.get(id);
+    // Stop at a prior gate: its guarded work is a separate review card.
+    if (step === undefined || isGateStep(step)) continue;
+    guarded.add(id);
+    queue.push(...step.needs);
+  }
+
+  return [...guarded];
 }
 
 /** Append produced artifacts to the run-level index (later wins on id clash). */
