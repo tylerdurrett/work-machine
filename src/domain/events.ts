@@ -1,24 +1,47 @@
 import type { ArtifactIndexEntry } from './artifacts.js';
 
 /**
- * Event taxonomy for the gateless subset of a run.
+ * Event taxonomy for a run.
  *
  * `events.jsonl` is the append-only canonical record of a run (ADR-0003). Every
  * event carries the {@link EventEnvelope} and a `type` discriminant; the union
  * {@link EngineEvent} is what `decide` folds over to derive current state.
  *
- * Gate events (`gate_opened` / `command_received` / `gate_decided`) arrive in a
- * later slice and are deliberately absent here.
+ * Beyond the gateless step lifecycle, the log carries the three gate facts that
+ * drive a review step (CONTEXT.md → Gate / Command):
+ *
+ *   - `gate_opened` — the coordinator has reached a review step and is waiting
+ *     on a command (the coordinator-owned wait state itself).
+ *   - `command_received` — an external tracker signal (e.g. `/approve`) ingested
+ *     into the log. It becomes canonical here but is *not* yet truth: `decide`'s
+ *     pure validation decides whether it drives the gate or stays audit-only.
+ *   - `gate_decided` — a validated decision closed the gate.
  */
 
-/** The discriminant tags for the gateless event subset. */
+/** The discriminant tags for every event kind in the log. */
 export type EngineEventType =
   | 'run_created'
   | 'step_dispatched'
   | 'step_succeeded'
   | 'step_failed'
   | 'run_completed'
-  | 'run_failed';
+  | 'run_failed'
+  | 'gate_opened'
+  | 'command_received'
+  | 'gate_decided';
+
+/**
+ * The decision a reviewer can hand a gate. Bound to the workflow's
+ * `allowed_decisions` vocabulary: a command's verb is valid only if the open
+ * gate lists it.
+ *
+ *  - `approve` — accept the review step's output; the gate closes and the run
+ *    advances past it.
+ *  - `request_changes` — send the step back for revision; carries free-text
+ *    {@link GateDecidedEvent.feedback} and loops the step to `pending`.
+ *  - `reject` — terminally decline; the run fails.
+ */
+export type GateDecision = 'approve' | 'request_changes' | 'reject';
 
 /**
  * Fields shared by every event in the log.
@@ -90,11 +113,77 @@ export interface RunFailedEvent extends EventEnvelope {
   reason: string;
 }
 
-/** Discriminated union of every event kind in the gateless subset. */
+/**
+ * The coordinator reached a review step and opened its gate: it is now in a
+ * wait state until a valid {@link CommandReceivedEvent} closes the gate. One
+ * open gate at a time this slice (ADR-0004).
+ */
+export interface GateOpenedEvent extends EventEnvelope {
+  type: 'gate_opened';
+  /** Stable id of the gate that was opened (the target a command must match). */
+  gateId: string;
+  /** Id of the review step this gate guards. */
+  stepId: string;
+}
+
+/**
+ * An external tracker command (e.g. `/approve`) was ingested into the log. It
+ * is canonical-but-not-yet-truth: `decide` runs the pure validation
+ * (open gate + matching `gateId` + verb in the gate's `allowed_decisions`) and
+ * only the first valid command per gate drives a {@link GateDecidedEvent}; any
+ * other (wrong gate, disallowed verb, closed gate, or a later valid duplicate)
+ * stays in the log as an audit-only fact that advances no state.
+ */
+export interface CommandReceivedEvent extends EventEnvelope {
+  type: 'command_received';
+  /** Gate this command targets; must match the currently-open gate to be valid. */
+  gateId: string;
+  /**
+   * Tracker's stable comment id — the canonical idempotency key. A comment id
+   * already present in the log is ignored on re-ingestion, so a crash mid-poll
+   * is a no-op (CONTEXT.md → Command).
+   */
+  commentId: string;
+  /** Who issued the command. Recorded now; identity is NOT enforced yet. */
+  actor: string;
+  /** The decision verb the command carries. */
+  decision: GateDecision;
+  /**
+   * Free-text revision feedback the reviewer attached, meaningful only when
+   * `decision` is `request_changes`. `decide` threads it onto the resulting
+   * `decide_gate` so the harness records it on `gate_decided`.
+   */
+  feedback?: string;
+}
+
+/**
+ * A validated command closed a gate. The harness appends this after `decide`
+ * names `decide_gate`; `decide` never appends it itself.
+ */
+export interface GateDecidedEvent extends EventEnvelope {
+  type: 'gate_decided';
+  /** Gate that was decided. */
+  gateId: string;
+  /** The decision verb that closed the gate. */
+  decision: GateDecision;
+  /** Who issued the decision (recorded, not enforced). */
+  actor: string;
+  /**
+   * Free-text revision feedback, present only when `decision` is
+   * `request_changes`. Threaded into the re-dispatched step's resolution context
+   * in a later task; recorded here as a fact now.
+   */
+  feedback?: string;
+}
+
+/** Discriminated union of every event kind in the log. */
 export type EngineEvent =
   | RunCreatedEvent
   | StepDispatchedEvent
   | StepSucceededEvent
   | StepFailedEvent
   | RunCompletedEvent
-  | RunFailedEvent;
+  | RunFailedEvent
+  | GateOpenedEvent
+  | CommandReceivedEvent
+  | GateDecidedEvent;

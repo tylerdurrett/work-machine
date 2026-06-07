@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { EngineEvent } from '../domain/index.js';
-import { loadWorkflow } from '../workflow/index.js';
-import type { WorkflowDefinition, WorkflowStep } from '../workflow/index.js';
+import { isScriptStep, loadWorkflow } from '../workflow/index.js';
+import type { ScriptStep, WorkflowDefinition } from '../workflow/index.js';
 import { resolveCommand } from './resolver.js';
 
 const runId = '20260607T120000Z-tiny-smoke-ab12';
@@ -18,10 +18,12 @@ function created(inputs: Record<string, unknown> = {}): EngineEvent {
   };
 }
 
-/** The step whose templated `run` the resolver substitutes. */
-function stepOf(workflow: WorkflowDefinition): WorkflowStep {
+/** The script step whose templated `run` the resolver substitutes. */
+function stepOf(workflow: WorkflowDefinition): ScriptStep {
   const [step] = workflow.steps;
-  if (step === undefined) throw new Error('test workflow has no steps');
+  if (step === undefined || !isScriptStep(step)) {
+    throw new Error('test workflow has no script step');
+  }
   return step;
 }
 

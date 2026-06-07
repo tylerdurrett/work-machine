@@ -2,7 +2,11 @@ import type { EngineEvent, RunState } from '../domain/index.js';
 import type { Executor } from '../executor/index.js';
 import { decide, foldRunState } from '../orchestrator/index.js';
 import type { EventLog } from '../run/index.js';
-import type { WorkflowDefinition, WorkflowStep } from '../workflow/index.js';
+import {
+  isScriptStep,
+  type ScriptStep,
+  type WorkflowDefinition,
+} from '../workflow/index.js';
 import { resolveCommand } from './resolver.js';
 
 /**
@@ -169,11 +173,18 @@ function runIdOf(events: readonly EngineEvent[]): string {
   throw new Error('cannot tick a run with no run_created event in its log');
 }
 
-/** Find a workflow step by id, or throw if the decision names an unknown step. */
-function stepOf(workflow: WorkflowDefinition, stepId: string): WorkflowStep {
+/**
+ * Find the script step a `run_step` decision names, or throw. `decide` only ever
+ * names a script step for `run_step` (gate steps advance via the gate-decision
+ * moves); the type narrowing makes that contract explicit at the dispatch site.
+ */
+function stepOf(workflow: WorkflowDefinition, stepId: string): ScriptStep {
   const step = workflow.steps.find((s) => s.id === stepId);
   if (step === undefined) {
     throw new Error(`decide named unknown step '${stepId}'`);
+  }
+  if (!isScriptStep(step)) {
+    throw new Error(`decide named non-script step '${stepId}' for run_step`);
   }
   return step;
 }
