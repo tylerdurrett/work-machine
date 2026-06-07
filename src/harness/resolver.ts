@@ -1,6 +1,11 @@
 import type { EngineEvent } from '../domain/index.js';
-import type { WorkflowDefinition, WorkflowStep } from '../workflow/index.js';
-import { ARTIFACT_REF_RE, INPUT_REF_RE, TOKEN_RE } from '../workflow/index.js';
+import type { ScriptStep, WorkflowDefinition } from '../workflow/index.js';
+import {
+  ARTIFACT_REF_RE,
+  INPUT_REF_RE,
+  isScriptStep,
+  TOKEN_RE,
+} from '../workflow/index.js';
 
 /**
  * The resolver: turn a step's templated `run` command into the concrete shell
@@ -51,7 +56,11 @@ function readInputs(events: readonly EngineEvent[]): Record<string, unknown> {
  */
 function artifactPaths(workflow: WorkflowDefinition): Map<string, string> {
   return new Map(
-    workflow.steps.flatMap((step) => step.produces.map((a) => [a.id, a.path])),
+    workflow.steps.flatMap((step) =>
+      isScriptStep(step)
+        ? step.produces.map((a): [string, string] => [a.id, a.path])
+        : [],
+    ),
   );
 }
 
@@ -65,14 +74,14 @@ function artifactPaths(workflow: WorkflowDefinition): Map<string, string> {
  * loudly at dispatch rather than dispatching a half-substituted command.
  *
  * @param workflow the run's validated workflow definition (its snapshot).
- * @param step the step whose templated command is being resolved.
+ * @param step the script step whose templated command is being resolved.
  * @param events the run's event log, read for the run's inputs.
  * @returns the fully-resolved command, with no `{{...}}` tokens remaining.
  * @throws if a token references a binding absent from inputs/artifacts.
  */
 export function resolveCommand(
   workflow: WorkflowDefinition,
-  step: WorkflowStep,
+  step: ScriptStep,
   events: readonly EngineEvent[],
 ): string {
   const inputs = readInputs(events);

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { loadWorkflow } from './loader.js';
+import { isGateStep, isScriptStep } from './schema.js';
 
 const validYaml = `
 slug: tiny-smoke
@@ -41,7 +42,8 @@ steps:
     run: echo hi
 `);
     expect(def.inputs).toEqual({});
-    expect(def.steps[0]?.produces).toEqual([]);
+    const step = def.steps[0];
+    expect(step && isScriptStep(step) && step.produces).toEqual([]);
   });
 
   it('throws a ZodError on invalid YAML syntax', () => {
@@ -103,21 +105,48 @@ steps:
     }
   });
 
-  it('rejects a gate step type (gateless scope)', () => {
-    try {
+  it('accepts a gate (review) step declaring allowed_decisions', () => {
+    const def = loadWorkflow(`
+slug: gated
+steps:
+  - id: build
+    type: script
+    run: echo hi
+  - id: review
+    type: gate
+    needs: [build]
+    allowed_decisions: [approve, request_changes, reject]
+`);
+    const gate = def.steps[1];
+    expect(gate && isGateStep(gate) && gate.allowed_decisions).toEqual([
+      'approve',
+      'request_changes',
+      'reject',
+    ]);
+  });
+
+  it('rejects a gate step that also carries a script-only key (run)', () => {
+    expect(() =>
       loadWorkflow(`
 slug: x
 steps:
-  - id: approve
+  - id: review
     type: gate
+    allowed_decisions: [approve]
     run: echo hi
-`);
-      throw new Error('expected a ZodError');
-    } catch (err) {
-      expect(err).toBeInstanceOf(z.ZodError);
-      expect(
-        (err as z.ZodError).issues.some((i) => i.path.includes('type')),
-      ).toBe(true);
-    }
+`),
+    ).toThrow(z.ZodError);
+  });
+
+  it('rejects a gate step with an empty allowed_decisions list', () => {
+    expect(() =>
+      loadWorkflow(`
+slug: x
+steps:
+  - id: review
+    type: gate
+    allowed_decisions: []
+`),
+    ).toThrow(z.ZodError);
   });
 });

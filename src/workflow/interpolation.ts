@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { WorkflowDefinition } from './schema.js';
+import { isScriptStep, type WorkflowDefinition } from './schema.js';
 
 /**
  * Static validation of `{{...}}` interpolation references (AC#2).
@@ -45,7 +45,9 @@ export function validateInterpolationRefs(
   const issues: z.ZodIssue[] = [];
   const declaredInputs = new Set(Object.keys(def.inputs));
   const producedIds = new Set(
-    def.steps.flatMap((step) => step.produces.map((a) => a.id)),
+    def.steps.flatMap((step) =>
+      isScriptStep(step) ? step.produces.map((a) => a.id) : [],
+    ),
   );
 
   const check = (text: string, path: (string | number)[]): void => {
@@ -87,6 +89,9 @@ export function validateInterpolationRefs(
   };
 
   def.steps.forEach((step, stepIndex) => {
+    // Only script steps carry interpolatable text; gate steps have no `run` or
+    // produced paths.
+    if (!isScriptStep(step)) return;
     check(step.run, ['steps', stepIndex, 'run']);
     step.produces.forEach((artifact, pathIndex) => {
       check(artifact.path, ['steps', stepIndex, 'produces', pathIndex, 'path']);
