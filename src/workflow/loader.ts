@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
+import { validateDag } from './dag.js';
 import { validateInterpolationRefs } from './interpolation.js';
 import { workflowSchema, type WorkflowDefinition } from './schema.js';
 
@@ -32,7 +33,7 @@ export function loadWorkflow(yamlText: string): WorkflowDefinition {
 
   const def = workflowSchema.parse(parsed);
 
-  const issues = validateInterpolationRefs(def);
+  const issues = [...validateInterpolationRefs(def), ...validateDag(def)];
   if (issues.length > 0) {
     throw new z.ZodError(issues);
   }
