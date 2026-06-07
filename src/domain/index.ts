@@ -1,8 +1,12 @@
 export type { ArtifactIndexEntry } from './artifacts.js';
 export type {
+  CommandReceivedEvent,
   EngineEvent,
   EngineEventType,
   EventEnvelope,
+  GateDecidedEvent,
+  GateDecision,
+  GateOpenedEvent,
   RunCompletedEvent,
   RunCreatedEvent,
   RunFailedEvent,
