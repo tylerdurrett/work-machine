@@ -16,6 +16,7 @@ export type {
 } from './events.js';
 export type {
   Decision,
+  OpenGate,
   RunState,
   RunStatus,
   StepState,
