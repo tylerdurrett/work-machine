@@ -167,9 +167,17 @@ git checkout -b <type>/issue-<N>-<slug>
 
 If the branch already exists locally (left over from a prior failed attempt), stop and ask the user before reusing or deleting it.
 
-## Step 7: Implement, one commit per sub-section
+## Step 7: Delegate the implementation to a sub-agent
 
-For each sub-section in the inline plan:
+The main (outer) agent does **not** write the code. It has already done the housekeeping — resolved the base branch, synced, explored, planned, branched — and it owns the review and PR steps that follow. The actual coding happens in a single sub-agent (via the `Agent` tool) so the implementation work runs in a clean context, free of the bookkeeping above.
+
+Spawn one sub-agent for the whole implementation. Hand it everything it needs to work without re-deriving context:
+
+- The task's agent brief and any contract updates (parent comments, audit syntheses) surfaced in Steps 1–2.
+- The inline plan from Step 5 — the numbered sub-sections are its work list.
+- The branch it must commit on (already checked out by Step 6) and the project conventions below.
+
+Instruct the sub-agent to, **for each sub-section in the plan**:
 
 1. Implement.
 2. Run `pnpm typecheck`, `pnpm lint:fix`, `pnpm format:fix`. Resolve issues.
@@ -178,7 +186,17 @@ For each sub-section in the inline plan:
    - Subject: `<type>(<scope>): <sub-section title>`, e.g. `fix(billing): include tax line in invoice subtotal calculation`.
    - Optional body: one or two lines if non-obvious; otherwise omit.
 
-Do not bundle multiple sub-sections into one commit. The 1:1 mapping is what makes review and bisect tractable.
+Tell it not to bundle multiple sub-sections into one commit — the 1:1 mapping is what makes review and bisect tractable — and not to push, open a PR, or touch labels (those are the outer agent's job). Have it report back the commits it made (one line each) and any deviations from the plan or blockers it hit.
+
+### Review the sub-agent's work when it returns
+
+When the sub-agent finishes, the outer agent reviews before moving on. Do not rubber-stamp:
+
+- `git log --oneline <base-branch>..HEAD` — confirm one commit per sub-section, messages match the convention, nothing extraneous.
+- `git diff <base-branch>..HEAD` — read the actual changes against the brief and the plan. Check the work is on-contract, doesn't drift, and didn't touch the out-of-bounds areas in "What this skill does NOT do".
+- Re-run `pnpm typecheck` (and `pnpm test` if the plan calls for it) yourself to confirm the tree is green.
+
+If the work is incomplete, off-contract, or the tree is red, send the sub-agent back with specific corrections (or, for a small gap, fix it directly and commit). Only proceed to Step 8 once the diff genuinely satisfies the plan.
 
 ## Step 8: Walk the brief, verify acceptance criteria first-hand
 
