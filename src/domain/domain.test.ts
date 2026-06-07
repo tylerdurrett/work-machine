@@ -77,14 +77,87 @@ describe('domain type contracts', () => {
     ]);
   });
 
-  it('models each Decision variant', () => {
+  it('models the gate event subset as EngineEvents', () => {
+    const log: EngineEvent[] = [
+      {
+        type: 'gate_opened',
+        runId,
+        seq: 0,
+        ts: '2026-06-07T12:00:00.000Z',
+        gateId: 'review',
+        stepId: 'review',
+      },
+      {
+        type: 'command_received',
+        runId,
+        seq: 1,
+        ts: '2026-06-07T12:00:01.000Z',
+        gateId: 'review',
+        commentId: 'gh-comment-42',
+        actor: 'alice',
+        decision: 'request_changes',
+        feedback: 'tighten the copy',
+      },
+      {
+        type: 'gate_decided',
+        runId,
+        seq: 2,
+        ts: '2026-06-07T12:00:02.000Z',
+        gateId: 'review',
+        decision: 'request_changes',
+        actor: 'alice',
+        feedback: 'tighten the copy',
+      },
+    ];
+
+    expect(log.map((e) => e.type)).toEqual([
+      'gate_opened',
+      'command_received',
+      'gate_decided',
+    ]);
+  });
+
+  it('models each Decision variant, including the gate moves', () => {
     const decisions: Decision[] = [
       { kind: 'run_step', stepId: 'greet' },
+      { kind: 'open_gate', gateId: 'review', stepId: 'review' },
+      {
+        kind: 'decide_gate',
+        gateId: 'review',
+        decision: 'approve',
+        actor: 'alice',
+      },
       { kind: 'wait' },
       { kind: 'done' },
     ];
 
-    expect(decisions.map((d) => d.kind)).toEqual(['run_step', 'wait', 'done']);
+    expect(decisions.map((d) => d.kind)).toEqual([
+      'run_step',
+      'open_gate',
+      'decide_gate',
+      'wait',
+      'done',
+    ]);
+  });
+
+  it('models a review step and a rejected run via the gate vocabulary', () => {
+    const state: RunState = {
+      runId,
+      workflowSlug: 'gated',
+      status: 'rejected',
+      inputs: {},
+      steps: {
+        review: {
+          stepId: 'review',
+          status: 'rejected',
+          decision: 'reject',
+        },
+      },
+      artifacts: [],
+    };
+
+    expect(state.status).toBe('rejected');
+    expect(state.steps.review?.decision).toBe('reject');
   });
 
   it('models a derived RunState snapshot', () => {
