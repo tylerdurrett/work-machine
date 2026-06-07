@@ -73,19 +73,29 @@ steps:
     );
   });
 
+  it('accepts a well-formed {{feedback.<field>}} reference', () => {
+    // Feedback is a runtime fact the resolver supplies, not a declaration; the
+    // loader only checks its shape, so a well-formed reference passes.
+    const def = loadWorkflow(`
+slug: feedback-ok
+steps:
+  - id: revise
+    type: script
+    run: 'echo {{feedback.note}}'
+`);
+    expect(def.steps[0]?.id).toBe('revise');
+  });
+
   it('rejects an unsupported reference shape', () => {
     const messages = issueMessages(`
 slug: unsupported
 steps:
   - id: use
     type: script
-    run: 'echo {{artifacts.x.size}} {{feedback.note}} {{inputs.}}'
+    run: 'echo {{artifacts.x.size}} {{inputs.}}'
 `);
     expect(messages).toContain(
       "unsupported interpolation reference '{{artifacts.x.size}}'",
-    );
-    expect(messages).toContain(
-      "unsupported interpolation reference '{{feedback.note}}'",
     );
     expect(messages).toContain(
       "unsupported interpolation reference '{{inputs.}}'",
