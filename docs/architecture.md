@@ -111,12 +111,12 @@ comments that aren't commands, so it can't be derived from events.
 |---|---|---|
 | `run_created` | `run create` | run_id, workflow name/version, snapshot ref, inputs |
 | `card_created` | tracker card made | card ref |
-| `step_dispatched` | harness begins a step | step_id |
+| `step_dispatched` | harness begins a step | step_id, resolved command (post-interpolation; makes the log self-describing) |
 | `step_succeeded` | executor returns OK | step_id, produced artifacts `[{id, path, sha256, size}]` |
 | `step_failed` | executor errors | step_id, error |
 | `gate_opened` | `decide` reaches a review step | gate_id (=step_id), artifacts under review |
-| `command_received` | raw tracker command arrives | gate_id, decision, actor, source |
-| `gate_decided` | `decide` validates the command | gate_id, decision (canonical outcome) |
+| `command_received` | raw tracker command arrives | gate_id, decision, actor, source, comment_id (canonical idempotency key) |
+| `gate_decided` | `decide` validates the command | gate_id, decision (canonical outcome); revision feedback text when `request_changes` |
 | `run_completed` / `run_failed` | terminal | — |
 
 `step_dispatched` is recorded *before* execution so a crash leaves a
