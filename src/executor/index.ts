@@ -1,3 +1,4 @@
+export { scriptExecutor } from './script.js';
 export type {
   Executor,
   ExecutorResult,
