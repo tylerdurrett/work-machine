@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { foldRunState } from '../orchestrator/index.js';
 import { JsonlEventLog, resolveRunDir } from '../run/index.js';
+import { FakeTracker } from '../tracker/index.js';
 import { loadWorkflowFile } from '../workflow/index.js';
 import type { CliDeps } from './main.js';
 import { main } from './main.js';
@@ -19,6 +20,7 @@ import { main } from './main.js';
 const now = (): string => '2026-06-07T12:00:00.000Z';
 const rand = (): string => 'ab12';
 const RUN_ID = '20260607T120000Z-tiny-smoke-ab12';
+const SANDBOX_REPO = 'acme/widgets';
 
 const WORKFLOW_YAML = `
 slug: tiny-smoke
@@ -45,6 +47,7 @@ describe('main (CLI dispatch)', () => {
       now,
       rand,
       mintCommentId: () => 'comment-1',
+      makeTracker: () => new FakeTracker(),
       log: (line) => lines.push(line),
     };
   }
@@ -54,9 +57,11 @@ describe('main (CLI dispatch)', () => {
     workflowPath = join(runsRoot, 'workflow.yaml');
     writeFileSync(workflowPath, WORKFLOW_YAML, 'utf8');
     lines = [];
+    process.env.WORKMACHINE_SANDBOX_REPO = SANDBOX_REPO;
   });
 
   afterEach(async () => {
+    delete process.env.WORKMACHINE_SANDBOX_REPO;
     await rm(runsRoot, { recursive: true, force: true });
   });
 
@@ -72,6 +77,7 @@ describe('main (CLI dispatch)', () => {
     const events = new JsonlEventLog(layout.eventsLogPath).read();
     expect(events.map((e) => e.type)).toEqual([
       'run_created',
+      'card_created',
       'step_dispatched',
       'step_succeeded',
       'run_completed',
@@ -128,6 +134,7 @@ describe('main command dispatch (manual gate command)', () => {
       now,
       rand,
       mintCommentId: () => 'comment-1',
+      makeTracker: () => new FakeTracker(),
       log: (line) => lines.push(line),
     };
   }
@@ -137,9 +144,11 @@ describe('main command dispatch (manual gate command)', () => {
     workflowPath = join(runsRoot, 'workflow.yaml');
     writeFileSync(workflowPath, GATED_WORKFLOW_YAML, 'utf8');
     lines = [];
+    process.env.WORKMACHINE_SANDBOX_REPO = SANDBOX_REPO;
   });
 
   afterEach(async () => {
+    delete process.env.WORKMACHINE_SANDBOX_REPO;
     await rm(runsRoot, { recursive: true, force: true });
   });
 

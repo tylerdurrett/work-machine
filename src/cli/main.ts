@@ -4,6 +4,11 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import type { GateDecision } from '../domain/index.js';
+import {
+  GitHubTracker,
+  type TrackerAdapter,
+  resolveGitHubConfig,
+} from '../tracker/index.js';
 import { runCommand } from './command.js';
 import { runCreate } from './run-create.js';
 import { runTick } from './tick.js';
@@ -52,6 +57,13 @@ export interface CliDeps {
    * minter so the appended `command_received` is fully determined.
    */
   mintCommentId: () => string;
+  /**
+   * Build the tracker the run's card opens on, given the resolved `owner/name`
+   * repo. Defaults to a live {@link GitHubTracker} from
+   * {@link resolveGitHubConfig}; tests inject a {@link FakeTracker} so intake
+   * runs offline (no live GitHub).
+   */
+  makeTracker: (repo: string) => TrackerAdapter;
   /** Output sink. Defaults to `console.log`. */
   log: (line: string) => void;
 }
@@ -65,6 +77,17 @@ function defaultRand(): string {
   return suffix;
 }
 
+/**
+ * Build the live tracker for a resolved repo: a {@link GitHubTracker} over the
+ * config resolved from `process.env` plus the operator-supplied repo (ADR-0008 —
+ * the engine hard-codes no tracker repo). The repo string was already validated
+ * as `owner/name` when it was resolved, so passing it through here re-resolves
+ * the same config rather than reaching for the env fallback.
+ */
+function defaultMakeTracker(repo: string): TrackerAdapter {
+  return new GitHubTracker(resolveGitHubConfig(process.env, { repo }));
+}
+
 /** Fill in production defaults for any dependency the caller did not inject. */
 function resolveDeps(deps?: Partial<CliDeps>): CliDeps {
   return {
@@ -72,6 +95,7 @@ function resolveDeps(deps?: Partial<CliDeps>): CliDeps {
     now: deps?.now ?? (() => new Date().toISOString()),
     rand: deps?.rand ?? defaultRand,
     mintCommentId: deps?.mintCommentId ?? (() => randomUUID()),
+    makeTracker: deps?.makeTracker ?? defaultMakeTracker,
     log:
       deps?.log ??
       ((line) => {
@@ -117,7 +141,8 @@ export async function main(
   argv: string[],
   deps?: Partial<CliDeps>,
 ): Promise<void> {
-  const { runsRoot, now, rand, mintCommentId, log } = resolveDeps(deps);
+  const { runsRoot, now, rand, mintCommentId, makeTracker, log } =
+    resolveDeps(deps);
   const [command, ...rest] = argv;
 
   if (command === 'run' && rest[0] === 'create') {
@@ -135,13 +160,24 @@ export async function main(
         'usage: workmachine run create <workflowPath> [--input k=v ...] [--run-id <id>]',
       );
     }
-    const { runId } = runCreate({
+    // The card's repo is operator-supplied per run, falling back to the
+    // local-dev `WORKMACHINE_SANDBOX_REPO` (ADR-0008). It is recorded on
+    // `card_created` so the run is self-describing.
+    const repo = process.env.WORKMACHINE_SANDBOX_REPO;
+    if (repo === undefined || repo === '') {
+      throw new Error(
+        'no target repo: set WORKMACHINE_SANDBOX_REPO (owner/name)',
+      );
+    }
+    const { runId } = await runCreate({
       workflowPath,
       inputs: parseInputs(values.input ?? []),
       runId: values['run-id'],
       runsRoot,
       now,
       rand,
+      tracker: makeTracker(repo),
+      repo,
     });
     log(`created run ${runId}`);
     log(`next: workmachine tick ${runId}`);
