@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { WorkflowDefinition } from './schema.js';
+import { isScriptStep, type WorkflowDefinition } from './schema.js';
 
 /**
  * Static validation of the step dependency graph (AC#3).
@@ -58,6 +58,7 @@ export function validateDag(def: WorkflowDefinition): z.ZodIssue[] {
   const producerStepIdByArtifact = new Map<string, string>();
   const seenArtifactIds = new Set<string>();
   def.steps.forEach((step, i) => {
+    if (!isScriptStep(step)) return;
     step.produces.forEach((artifact, j) => {
       if (seenArtifactIds.has(artifact.id)) {
         issues.push({
@@ -96,7 +97,9 @@ export function validateDag(def: WorkflowDefinition): z.ZodIssue[] {
       addEdge(step.id, dep);
     });
 
-    // Implicit edges from resolved artifact references.
+    // Implicit edges from resolved artifact references (script steps only;
+    // gate steps carry no command or produced paths).
+    if (!isScriptStep(step)) return;
     const refTexts = [step.run, ...step.produces.map((a) => a.path)];
     for (const text of refTexts) {
       for (const artifactId of referencedArtifactIds(text)) {

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { WorkflowDefinition } from './schema.js';
+import { isScriptStep, type WorkflowDefinition } from './schema.js';
 
 /**
  * Static validation of `{{...}}` interpolation references (AC#2).
@@ -11,8 +11,12 @@ import type { WorkflowDefinition } from './schema.js';
  *  - `{{inputs.<name>}}` must name a declared input.
  *  - `{{artifacts.<id>.path}}` must name an artifact some step `produces` (an
  *    unresolved one is the "dangling artifact ref" the contract calls out).
- *  - anything else (unknown namespace, `{{artifacts.x.size}}`, `{{feedback.*}}`,
- *    malformed tokens) is unsupported in this slice and rejected.
+ *  - `{{feedback.<field>}}` is a well-formed revision-feedback reference. The
+ *    loader accepts its *shape* only — there is nothing to cross-check against a
+ *    declaration, because feedback is a runtime fact threaded from the gate's
+ *    `request_changes` decision, supplied by the resolver, not by the workflow.
+ *  - anything else (unknown namespace, `{{artifacts.x.size}}`, malformed
+ *    tokens) is unsupported in this slice and rejected.
  *
  * Failures are returned as `z.ZodIssue[]` (not thrown) so the loader can merge
  * them with the DAG pass into a single `z.ZodError`. Paths point at the precise
@@ -33,6 +37,8 @@ export const TOKEN_RE = /\{\{\s*([^}]*?)\s*\}\}/g;
 export const INPUT_REF_RE = /^inputs\.([A-Za-z0-9_-]+)$/;
 /** Matches the inner text of an `{{artifacts.<id>.path}}` token, capturing `<id>`. */
 export const ARTIFACT_REF_RE = /^artifacts\.([A-Za-z0-9_-]+)\.path$/;
+/** Matches the inner text of a `{{feedback.<field>}}` token, capturing `<field>`. */
+export const FEEDBACK_REF_RE = /^feedback\.([A-Za-z0-9_-]+)$/;
 
 /**
  * Validate every interpolation reference in `def` against its declarations.
@@ -45,7 +51,9 @@ export function validateInterpolationRefs(
   const issues: z.ZodIssue[] = [];
   const declaredInputs = new Set(Object.keys(def.inputs));
   const producedIds = new Set(
-    def.steps.flatMap((step) => step.produces.map((a) => a.id)),
+    def.steps.flatMap((step) =>
+      isScriptStep(step) ? step.produces.map((a) => a.id) : [],
+    ),
   );
 
   const check = (text: string, path: (string | number)[]): void => {
@@ -78,6 +86,13 @@ export function validateInterpolationRefs(
         continue;
       }
 
+      // `{{feedback.<field>}}` is a runtime fact, not a declaration: there is
+      // nothing to cross-check here, so a well-formed reference passes static
+      // validation and the resolver supplies its value at dispatch.
+      if (FEEDBACK_REF_RE.test(token)) {
+        continue;
+      }
+
       issues.push({
         code: z.ZodIssueCode.custom,
         path,
@@ -87,6 +102,9 @@ export function validateInterpolationRefs(
   };
 
   def.steps.forEach((step, stepIndex) => {
+    // Only script steps carry interpolatable text; gate steps have no `run` or
+    // produced paths.
+    if (!isScriptStep(step)) return;
     check(step.run, ['steps', stepIndex, 'run']);
     step.produces.forEach((artifact, pathIndex) => {
       check(artifact.path, ['steps', stepIndex, 'produces', pathIndex, 'path']);

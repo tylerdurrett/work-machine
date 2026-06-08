@@ -7,6 +7,7 @@ import type {
 import { loadWorkflow } from '../workflow/index.js';
 import type { WorkflowDefinition } from '../workflow/index.js';
 import { decide } from './decide.js';
+import { foldRunState } from './fold.js';
 
 const runId = '20260607T120000Z-tiny-smoke-ab12';
 
@@ -42,6 +43,83 @@ steps:
     run: 'echo b'
     needs: [first]
 `);
+
+/** One script step guarded by a review gate; the single-review-card fixture. */
+const gated: WorkflowDefinition = loadWorkflow(`
+slug: gated
+steps:
+  - id: build
+    type: script
+    run: 'echo build'
+  - id: review
+    type: gate
+    needs: [build]
+    allowed_decisions: [approve, request_changes, reject]
+`);
+
+/** A gate that only permits approval, to exercise disallowed-verb rejection. */
+const approveOnly: WorkflowDefinition = loadWorkflow(`
+slug: approve-only
+steps:
+  - id: build
+    type: script
+    run: 'echo build'
+  - id: review
+    type: gate
+    needs: [build]
+    allowed_decisions: [approve]
+`);
+
+/** Build a `gate_opened` event for a review step (gateId === stepId here). */
+function gateOpened(seq: number, stepId: string): EngineEvent {
+  return {
+    type: 'gate_opened',
+    runId,
+    seq,
+    ts: '2026-06-07T12:00:03.000Z',
+    gateId: stepId,
+    stepId,
+  };
+}
+
+/** Build a `command_received` event targeting a gate. */
+function command(
+  seq: number,
+  gateId: string,
+  decision: 'approve' | 'request_changes' | 'reject',
+  extra: { actor?: string; commentId?: string; feedback?: string } = {},
+): EngineEvent {
+  return {
+    type: 'command_received',
+    runId,
+    seq,
+    ts: '2026-06-07T12:00:04.000Z',
+    gateId,
+    commentId: extra.commentId ?? `c-${seq}`,
+    actor: extra.actor ?? 'reviewer',
+    decision,
+    ...(extra.feedback !== undefined && { feedback: extra.feedback }),
+  };
+}
+
+/** Build a `gate_decided` event closing a gate. */
+function gateDecided(
+  seq: number,
+  gateId: string,
+  decision: 'approve' | 'request_changes' | 'reject',
+  extra: { actor?: string; feedback?: string } = {},
+): EngineEvent {
+  return {
+    type: 'gate_decided',
+    runId,
+    seq,
+    ts: '2026-06-07T12:00:05.000Z',
+    gateId,
+    decision,
+    actor: extra.actor ?? 'reviewer',
+    ...(extra.feedback !== undefined && { feedback: extra.feedback }),
+  };
+}
 
 /** Build a `run_created` event seeding the log. */
 function created(seq: number): EngineEvent {
@@ -179,6 +257,219 @@ const cases: DecideCase[] = [
     ],
     expected: { kind: 'wait' },
   },
+
+  // ── Gate decisions ──────────────────────────────────────────────────────
+  {
+    name: 'gate: a review step whose needs succeeded opens its gate',
+    workflow: gated,
+    events: [created(0), dispatched(1, 'build'), succeeded(2, 'build')],
+    expected: { kind: 'open_gate', gateId: 'review', stepId: 'review' },
+  },
+  {
+    name: 'gate: an open gate with no command yet waits',
+    workflow: gated,
+    events: [
+      created(0),
+      dispatched(1, 'build'),
+      succeeded(2, 'build'),
+      gateOpened(3, 'review'),
+    ],
+    expected: { kind: 'wait' },
+  },
+  {
+    name: 'gate happy path: a valid approve drives decide_gate',
+    workflow: gated,
+    events: [
+      created(0),
+      dispatched(1, 'build'),
+      succeeded(2, 'build'),
+      gateOpened(3, 'review'),
+      command(4, 'review', 'approve', { actor: 'alice' }),
+    ],
+    expected: {
+      kind: 'decide_gate',
+      gateId: 'review',
+      decision: 'approve',
+      actor: 'alice',
+    },
+  },
+  {
+    name: 'gate request_changes: a valid command drives decide_gate with feedback',
+    workflow: gated,
+    events: [
+      created(0),
+      dispatched(1, 'build'),
+      succeeded(2, 'build'),
+      gateOpened(3, 'review'),
+      command(4, 'review', 'request_changes', { feedback: 'fix the title' }),
+    ],
+    expected: {
+      kind: 'decide_gate',
+      gateId: 'review',
+      decision: 'request_changes',
+      actor: 'reviewer',
+      feedback: 'fix the title',
+    },
+  },
+  {
+    name: 'gate reject: a valid reject drives decide_gate',
+    workflow: gated,
+    events: [
+      created(0),
+      dispatched(1, 'build'),
+      succeeded(2, 'build'),
+      gateOpened(3, 'review'),
+      command(4, 'review', 'reject'),
+    ],
+    expected: {
+      kind: 'decide_gate',
+      gateId: 'review',
+      decision: 'reject',
+      actor: 'reviewer',
+    },
+  },
+  {
+    name: 'invalid command (wrong gate id): audit-only, gate keeps waiting',
+    workflow: gated,
+    events: [
+      created(0),
+      dispatched(1, 'build'),
+      succeeded(2, 'build'),
+      gateOpened(3, 'review'),
+      command(4, 'not-this-gate', 'approve'),
+    ],
+    expected: { kind: 'wait' },
+  },
+  {
+    name: 'invalid command (disallowed verb): audit-only, gate keeps waiting',
+    workflow: approveOnly,
+    events: [
+      created(0),
+      dispatched(1, 'build'),
+      succeeded(2, 'build'),
+      gateOpened(3, 'review'),
+      command(4, 'review', 'request_changes'),
+    ],
+    expected: { kind: 'wait' },
+  },
+  {
+    name: 'invalid command (closed/already-decided gate): no re-decide',
+    workflow: gated,
+    // The gate was already approved; a later command targets a closed gate and
+    // is audit-only. The run has settled, so decide waits for finalization.
+    events: [
+      created(0),
+      dispatched(1, 'build'),
+      succeeded(2, 'build'),
+      gateOpened(3, 'review'),
+      gateDecided(4, 'review', 'approve'),
+      command(5, 'review', 'reject'),
+    ],
+    expected: { kind: 'wait' },
+  },
+  {
+    name: 'first-valid-wins: the first valid command at a gate drives the decision',
+    workflow: approveOnly,
+    // An invalid command (disallowed verb) precedes two valid ones; the first
+    // VALID command (approve) wins, not the first command overall.
+    events: [
+      created(0),
+      dispatched(1, 'build'),
+      succeeded(2, 'build'),
+      gateOpened(3, 'review'),
+      command(4, 'review', 'request_changes'), // invalid here: not allowed
+      command(5, 'review', 'approve', { actor: 'first-valid' }),
+      command(6, 'review', 'approve', { actor: 'later' }),
+    ],
+    expected: {
+      kind: 'decide_gate',
+      gateId: 'review',
+      decision: 'approve',
+      actor: 'first-valid',
+    },
+  },
+  {
+    name: 'request_changes loop: after the gate decides, the work re-dispatches',
+    workflow: gated,
+    // request_changes loops `build` (and the gate) back to pending; decide
+    // re-dispatches the guarded work, reusing the same gate afterward.
+    events: [
+      created(0),
+      dispatched(1, 'build'),
+      succeeded(2, 'build'),
+      gateOpened(3, 'review'),
+      gateDecided(4, 'review', 'request_changes', { feedback: 'again' }),
+    ],
+    expected: { kind: 'run_step', stepId: 'build' },
+  },
+  {
+    name: 'a re-opened gate binds to the fresh command, not the spent request_changes',
+    workflow: gated,
+    // After request_changes loops the gate, the command that drove that round is
+    // spent: it sits at/before the `gate_decided` that closed it. When the same
+    // gate re-opens, a new approve must win — otherwise the stale
+    // request_changes (seq 4) would replay forever and the run never settles.
+    events: [
+      created(0),
+      dispatched(1, 'build'),
+      succeeded(2, 'build'),
+      gateOpened(3, 'review'),
+      command(4, 'review', 'request_changes', { feedback: 'v2' }),
+      gateDecided(5, 'review', 'request_changes', { feedback: 'v2' }),
+      dispatched(6, 'build'),
+      succeeded(7, 'build'),
+      gateOpened(8, 'review'),
+      command(9, 'review', 'approve'),
+    ],
+    expected: {
+      kind: 'decide_gate',
+      gateId: 'review',
+      decision: 'approve',
+      actor: 'reviewer',
+    },
+  },
+  {
+    name: 'a re-opened gate still waits when no fresh command has arrived',
+    workflow: gated,
+    // The earlier (spent) request_changes must not re-drive the re-opened gate;
+    // with no new command yet, decide waits.
+    events: [
+      created(0),
+      dispatched(1, 'build'),
+      succeeded(2, 'build'),
+      gateOpened(3, 'review'),
+      command(4, 'review', 'request_changes', { feedback: 'v2' }),
+      gateDecided(5, 'review', 'request_changes', { feedback: 'v2' }),
+      dispatched(6, 'build'),
+      succeeded(7, 'build'),
+      gateOpened(8, 'review'),
+    ],
+    expected: { kind: 'wait' },
+  },
+  {
+    name: 'reject is terminal: a rejected run is done',
+    workflow: gated,
+    events: [
+      created(0),
+      dispatched(1, 'build'),
+      succeeded(2, 'build'),
+      gateOpened(3, 'review'),
+      gateDecided(4, 'review', 'reject'),
+    ],
+    expected: { kind: 'done' },
+  },
+  {
+    name: 'approve settles the run: nothing left to dispatch, finalize',
+    workflow: gated,
+    events: [
+      created(0),
+      dispatched(1, 'build'),
+      succeeded(2, 'build'),
+      gateOpened(3, 'review'),
+      gateDecided(4, 'review', 'approve'),
+    ],
+    expected: { kind: 'wait' },
+  },
 ];
 
 describe('decide (pure event-log fold)', () => {
@@ -196,5 +487,97 @@ describe('decide (pure event-log fold)', () => {
     expect(first).toEqual(second);
     // The log argument is never mutated by the fold.
     expect(events).toEqual(before);
+  });
+});
+
+describe('foldRunState — gate lifecycle', () => {
+  it('opens a gate: the review step becomes awaiting_review and openGate is set', () => {
+    const state = foldRunState(gated, [
+      created(0),
+      dispatched(1, 'build'),
+      succeeded(2, 'build'),
+      gateOpened(3, 'review'),
+    ]);
+
+    expect(state.steps.review?.status).toBe('awaiting_review');
+    expect(state.openGate).toEqual({ gateId: 'review', stepId: 'review' });
+  });
+
+  it('approve: the review step is approved and the gate closes', () => {
+    const state = foldRunState(gated, [
+      created(0),
+      dispatched(1, 'build'),
+      succeeded(2, 'build'),
+      gateOpened(3, 'review'),
+      gateDecided(4, 'review', 'approve', { actor: 'alice' }),
+    ]);
+
+    expect(state.steps.review?.status).toBe('approved');
+    expect(state.steps.review?.decision).toBe('approve');
+    expect(state.openGate).toBeUndefined();
+  });
+
+  it('request_changes loops the guarded work and the gate back to pending', () => {
+    const state = foldRunState(gated, [
+      created(0),
+      dispatched(1, 'build'),
+      succeeded(2, 'build'),
+      gateOpened(3, 'review'),
+      gateDecided(4, 'review', 'request_changes', { feedback: 'redo it' }),
+    ]);
+
+    // The work the gate guards re-runs, and the gate re-opens (one card/gate).
+    expect(state.steps.build?.status).toBe('pending');
+    expect(state.steps.review?.status).toBe('pending');
+    // The decision + feedback are recorded on the (looped) gate step.
+    expect(state.steps.review?.decision).toBe('request_changes');
+    expect(state.steps.review?.feedback).toBe('redo it');
+    expect(state.openGate).toBeUndefined();
+  });
+
+  it('reject folds the run toward a terminal rejected outcome', () => {
+    const state = foldRunState(gated, [
+      created(0),
+      dispatched(1, 'build'),
+      succeeded(2, 'build'),
+      gateOpened(3, 'review'),
+      gateDecided(4, 'review', 'reject'),
+    ]);
+
+    expect(state.status).toBe('rejected');
+    expect(state.steps.review?.status).toBe('rejected');
+  });
+
+  it('an invalid command is audit-only: the open gate is unchanged', () => {
+    const state = foldRunState(gated, [
+      created(0),
+      dispatched(1, 'build'),
+      succeeded(2, 'build'),
+      gateOpened(3, 'review'),
+      command(4, 'wrong-gate', 'approve'),
+    ]);
+
+    // The command advanced no state: the gate is still open, awaiting review.
+    expect(state.openGate).toEqual({ gateId: 'review', stepId: 'review' });
+    expect(state.steps.review?.status).toBe('awaiting_review');
+  });
+
+  it('replays a full request_changes loop: re-run, re-open, approve, settle', () => {
+    // build → gate → request_changes → build re-runs → gate re-opens → approve.
+    const state = foldRunState(gated, [
+      created(0),
+      dispatched(1, 'build'),
+      succeeded(2, 'build'),
+      gateOpened(3, 'review'),
+      gateDecided(4, 'review', 'request_changes', { feedback: 'v2' }),
+      dispatched(5, 'build'),
+      succeeded(6, 'build'),
+      gateOpened(7, 'review'),
+      gateDecided(8, 'review', 'approve'),
+    ]);
+
+    expect(state.steps.build?.status).toBe('succeeded');
+    expect(state.steps.review?.status).toBe('approved');
+    expect(state.openGate).toBeUndefined();
   });
 });
