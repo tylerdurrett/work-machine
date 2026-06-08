@@ -127,7 +127,7 @@ describe('GitHubTracker.verifyAccess', () => {
     expect(header(req!, 'Authorization')).toBe('Bearer tok');
     expect(header(req!, 'Accept')).toBe('application/vnd.github+json');
     expect(header(req!, 'X-GitHub-Api-Version')).toBe('2022-11-28');
-    expect(header(req!, 'User-Agent')).toBe('work-machine');
+    expect(header(req!, 'User-Agent')).toBe('workmachine');
   });
 
   it('honors an injected baseUrl', async () => {
