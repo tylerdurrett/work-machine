@@ -268,7 +268,6 @@ async function ingestCommands(
   const cardRef: CardRef = { id: card.id, url: card.url };
   const cursor = readCursor?.(card.id);
   const result = await tracker.readCommands(cardRef, cursor);
-  writeCursor?.(card.id, result.cursor);
 
   // Dedup key: comment ids already recorded as `command_received` facts in the
   // log. Rebuilt from the log every poll, so correctness survives a lost cursor.
@@ -298,6 +297,15 @@ async function ingestCommands(
     });
     seq += 1;
   }
+
+  // Advance the cursor only AFTER the commands are durably appended (ADR-0006:
+  // crash-safe by replay, like step_dispatched-before-execute). Persisting the
+  // cursor before the append would, on a crash between the two, advance the
+  // watermark past comments that never reached the log — a 304/empty re-poll
+  // would then drop them for good. With this order a crash leaves the cursor
+  // un-advanced, so the next poll re-reads the comments and comment-id dedup
+  // absorbs the replay. A lost cursor still only costs a redundant fetch.
+  writeCursor?.(card.id, result.cursor);
 }
 
 /**
