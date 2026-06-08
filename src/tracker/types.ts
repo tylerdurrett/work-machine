@@ -59,15 +59,6 @@ export interface RenderReviewCardInput {
 }
 
 /**
- * The fake's cosmetic default comment author. No longer an exclusion signal:
- * self-recognition moved to the body {@link BOT_COMMENT_MARKER}, because the
- * live adapter stamps a comment's author with the token's own login, never this
- * fixed handle. Kept only so the in-memory fake has a stable default author;
- * removed in the ingestion sub-section if nothing else needs it.
- */
-export const BOT_ACTOR = 'workmachine';
-
-/**
  * The invisible marker the engine stamps into the body of its *own* comments
  * (gate prompts, coordinator notes) so ingestion never re-ingests them as
  * reviewer commands (CONTEXT.md → Command; ADR-0006, AC6). This — not the
