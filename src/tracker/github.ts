@@ -292,7 +292,7 @@ export class GitHubTracker implements TrackerAdapter {
         Authorization: `Bearer ${this.config.token}`,
         Accept: 'application/vnd.github+json',
         'X-GitHub-Api-Version': API_VERSION,
-        'User-Agent': 'work-machine',
+        'User-Agent': 'workmachine',
         ...(body !== undefined && { 'Content-Type': 'application/json' }),
         ...extraHeaders,
       },
