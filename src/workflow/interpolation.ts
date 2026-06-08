@@ -11,8 +11,12 @@ import { isScriptStep, type WorkflowDefinition } from './schema.js';
  *  - `{{inputs.<name>}}` must name a declared input.
  *  - `{{artifacts.<id>.path}}` must name an artifact some step `produces` (an
  *    unresolved one is the "dangling artifact ref" the contract calls out).
- *  - anything else (unknown namespace, `{{artifacts.x.size}}`, `{{feedback.*}}`,
- *    malformed tokens) is unsupported in this slice and rejected.
+ *  - `{{feedback.<field>}}` is a well-formed revision-feedback reference. The
+ *    loader accepts its *shape* only — there is nothing to cross-check against a
+ *    declaration, because feedback is a runtime fact threaded from the gate's
+ *    `request_changes` decision, supplied by the resolver, not by the workflow.
+ *  - anything else (unknown namespace, `{{artifacts.x.size}}`, malformed
+ *    tokens) is unsupported in this slice and rejected.
  *
  * Failures are returned as `z.ZodIssue[]` (not thrown) so the loader can merge
  * them with the DAG pass into a single `z.ZodError`. Paths point at the precise
@@ -33,6 +37,8 @@ export const TOKEN_RE = /\{\{\s*([^}]*?)\s*\}\}/g;
 export const INPUT_REF_RE = /^inputs\.([A-Za-z0-9_-]+)$/;
 /** Matches the inner text of an `{{artifacts.<id>.path}}` token, capturing `<id>`. */
 export const ARTIFACT_REF_RE = /^artifacts\.([A-Za-z0-9_-]+)\.path$/;
+/** Matches the inner text of a `{{feedback.<field>}}` token, capturing `<field>`. */
+export const FEEDBACK_REF_RE = /^feedback\.([A-Za-z0-9_-]+)$/;
 
 /**
  * Validate every interpolation reference in `def` against its declarations.
@@ -77,6 +83,13 @@ export function validateInterpolationRefs(
             message: `references artifact '${id}' that no step produces`,
           });
         }
+        continue;
+      }
+
+      // `{{feedback.<field>}}` is a runtime fact, not a declaration: there is
+      // nothing to cross-check here, so a well-formed reference passes static
+      // validation and the resolver supplies its value at dispatch.
+      if (FEEDBACK_REF_RE.test(token)) {
         continue;
       }
 
