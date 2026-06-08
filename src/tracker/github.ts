@@ -165,6 +165,7 @@ export class GitHubTracker implements TrackerAdapter {
         Accept: 'application/vnd.github+json',
         'X-GitHub-Api-Version': API_VERSION,
         'User-Agent': 'work-machine',
+        ...(body !== undefined && { 'Content-Type': 'application/json' }),
       },
       ...(body !== undefined && { body: JSON.stringify(body) }),
     });
