@@ -125,9 +125,17 @@ type CursorSidecar = z.infer<typeof cursorSidecarSchema>;
  */
 function loadCursorSidecar(layout: RunDirLayout): CursorSidecar {
   if (!existsSync(layout.cursorSidecarPath)) return {};
-  const parsed = cursorSidecarSchema.safeParse(
-    JSON.parse(readFileSync(layout.cursorSidecarPath, 'utf8')),
-  );
+  // A truncated or garbage sidecar (a half-flushed write, a crash mid-write)
+  // makes JSON.parse throw before zod ever runs. Catch it here too, so a
+  // corrupt sidecar degrades to "poll from the beginning" exactly like a
+  // schema-mismatched one — never an error on the read *or* the next write.
+  let json: unknown;
+  try {
+    json = JSON.parse(readFileSync(layout.cursorSidecarPath, 'utf8'));
+  } catch {
+    return {};
+  }
+  const parsed = cursorSidecarSchema.safeParse(json);
   return parsed.success ? parsed.data : {};
 }
 

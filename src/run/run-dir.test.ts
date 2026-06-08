@@ -4,6 +4,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -169,5 +170,21 @@ describe('cursor sidecar', () => {
     writeCursorSidecar(layout, 'card-1', { since: '3' });
 
     expect(readCursorSidecar(layout, 'card-99')).toBeUndefined();
+  });
+
+  it('degrades a corrupt (non-JSON) sidecar to "poll from the beginning"', () => {
+    const layout = resolveRunDir(runsRoot, runId);
+    createRunDir(layout, workflow);
+    // A half-flushed / garbage sidecar: not even valid JSON.
+    writeFileSync(layout.cursorSidecarPath, '{ this is not json', 'utf8');
+
+    // The read does not throw; it falls back to "no cursor".
+    expect(readCursorSidecar(layout, 'card-1')).toBeUndefined();
+
+    // And a subsequent write recovers it rather than throwing on the load.
+    expect(() =>
+      writeCursorSidecar(layout, 'card-1', { etag: 'recovered' }),
+    ).not.toThrow();
+    expect(readCursorSidecar(layout, 'card-1')).toEqual({ etag: 'recovered' });
   });
 });
