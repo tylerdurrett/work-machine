@@ -10,6 +10,7 @@ import { main } from './cli/index.js';
 import { foldRunState } from './orchestrator/index.js';
 import { JsonlEventLog, foldRun, resolveRunDir } from './run/index.js';
 import { FakeTracker } from './tracker/index.js';
+import type { CardRef } from './tracker/index.js';
 import { loadWorkflowFile } from './workflow/index.js';
 
 /**
@@ -587,5 +588,161 @@ describe('integration smoke: feedback loop (request_changes -> tick -> approve -
     // Re-ticking a completed run is a no-op.
     await main(['tick', FEEDBACK_RUN_ID], deps());
     expect(log.read()).toEqual(final);
+  });
+});
+
+/**
+ * The fake-GitHub-surface smoke (issue #36): the slice's proof-of-life. Where the
+ * gated/feedback blocks above drive the gate decision through the `command` CLI
+ * subcommand, this block closes the slice acceptance criterion — "adapter behavior
+ * tested against a fake GitHub surface; no live GitHub in unit tests" — by driving
+ * `/approve` IN AS A REVIEWER COMMENT through the {@link FakeTracker} surface and
+ * the harness's `readCommands` ingestion path, exactly as a human reviewer's
+ * comment would arrive in production.
+ *
+ * The whole loop runs offline against the in-memory fake: `run create` opens the
+ * fake card, the first `tick` runs the script step and opens the gate (rendering
+ * the review card), `seedComment` injects a reviewer `/approve` on that card (NOT
+ * `postComment`, which stamps the bot actor and is ingestion-excluded), and the
+ * next `tick` polls the card, ingests the comment as `command_received`, validates
+ * it against the open gate, and folds the run to `completed`.
+ *
+ * The reviewer card is `card-1`: the shared {@link FakeTracker} mints ids from a
+ * monotonic counter, and `run create` opens exactly one card before the first
+ * tick, so its id is fully determined. The cursor sidecar is wired by the CLI
+ * `tick` (`.cursor.json`), so deleting it between ticks is a faithful "lost
+ * cursor" — the dedup that survives it is keyed on comment ids in the log, never
+ * on the sidecar (ADR-0006).
+ */
+const FAKE_SURFACE_CARD: CardRef = {
+  id: 'card-1',
+  url: 'fake://card/card-1',
+};
+const REVIEWER = 'octocat';
+
+describe('integration smoke: fake GitHub surface (create -> tick -> /approve comment -> tick -> completed)', () => {
+  let runsRoot: string;
+  let lines: string[];
+  let tracker: FakeTracker;
+
+  // One tracker shared across create + every tick, as production hits one repo:
+  // the card opened at create is the card the gate re-renders into and the card
+  // a reviewer comment is seeded onto.
+  function deps(): Partial<CliDeps> {
+    return {
+      runsRoot,
+      now,
+      rand,
+      mintCommentId: () => 'comment-1',
+      makeTracker: () => tracker,
+      log: (line) => lines.push(line),
+    };
+  }
+
+  function logForGated(): JsonlEventLog {
+    return new JsonlEventLog(
+      resolveRunDir(runsRoot, GATED_RUN_ID).eventsLogPath,
+    );
+  }
+
+  function gatedSnapshot() {
+    return loadWorkflowFile(
+      resolveRunDir(runsRoot, GATED_RUN_ID).workflowSnapshotPath,
+    );
+  }
+
+  /** Create the gated run against the committed package. */
+  async function createGated(): Promise<void> {
+    await main(
+      [
+        'run',
+        'create',
+        gatedWorkflowPath,
+        '--input',
+        'name=World',
+        '--input',
+        `scriptPath=${gatedScriptPath}`,
+      ],
+      deps(),
+    );
+  }
+
+  /** Create the gated run, then tick once so greet runs and the gate opens. */
+  async function createAndOpenGate(): Promise<JsonlEventLog> {
+    await createGated();
+    await main(['tick', GATED_RUN_ID], deps());
+    return logForGated();
+  }
+
+  beforeEach(async () => {
+    runsRoot = await mkdtemp(join(tmpdir(), 'wm-smoke-fake-surface-'));
+    lines = [];
+    tracker = new FakeTracker();
+    process.env.WORKMACHINE_SANDBOX_REPO = 'acme/widgets';
+  });
+
+  afterEach(async () => {
+    delete process.env.WORKMACHINE_SANDBOX_REPO;
+    await rm(runsRoot, { recursive: true, force: true });
+  });
+
+  it('ingests a reviewer /approve comment off the fake surface and folds to completed', async () => {
+    const log = await createAndOpenGate();
+
+    // The first tick stopped at the open gate, having rendered the review card —
+    // nothing is decided yet because no reviewer comment exists.
+    expect(log.read().map((e) => e.type)).toEqual([
+      'run_created',
+      'card_created',
+      'step_dispatched',
+      'step_succeeded',
+      'gate_opened',
+    ]);
+    expect(tracker.cardState(FAKE_SURFACE_CARD.id)?.renderCount).toBe(1);
+
+    // A reviewer leaves `/approve` on the card. seedComment authors it as a human
+    // handle (not the bot actor postComment stamps), so ingestion will pick it up.
+    await tracker.seedComment(FAKE_SURFACE_CARD, '/approve', REVIEWER);
+
+    // The next tick polls the card, ingests the comment as `command_received`,
+    // validates it against the open gate, and drives the run to completion — the
+    // command never touched the `command` CLI; it came in as a comment.
+    await main(['tick', GATED_RUN_ID], deps());
+
+    const events = log.read();
+    expect(events.map((e) => e.type)).toEqual([
+      'run_created',
+      'card_created',
+      'step_dispatched',
+      'step_succeeded',
+      'gate_opened',
+      'command_received',
+      'gate_decided',
+      'run_completed',
+    ]);
+
+    // The ingested command carries the reviewer's handle and decision, bound to
+    // the open gate — proving it flowed through the fake surface, not the CLI.
+    const received = events.find((e) => e.type === 'command_received');
+    expect(received?.type).toBe('command_received');
+    if (received?.type === 'command_received') {
+      expect(received.actor).toBe(REVIEWER);
+      expect(received.decision).toBe('approve');
+      expect(received.gateId).toBe('review');
+      expect(received.commentId).toBe('c1');
+    }
+
+    // The folded state: run completed, the review step approved.
+    const state = foldRunState(gatedSnapshot(), events);
+    expect(state.status).toBe('completed');
+    expect(state.steps.review?.status).toBe('approved');
+
+    // The completed state is observable on disk, not just in memory.
+    const layout = resolveRunDir(runsRoot, GATED_RUN_ID);
+    const cache = parseYaml(readFileSync(layout.runCachePath, 'utf8')) as {
+      status: string;
+    };
+    expect(cache.status).toBe('completed');
+    expect(foldRun(events).status).toBe('completed');
   });
 });
