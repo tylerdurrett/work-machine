@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -744,5 +744,39 @@ describe('integration smoke: fake GitHub surface (create -> tick -> /approve com
     };
     expect(cache.status).toBe('completed');
     expect(foldRun(events).status).toBe('completed');
+  });
+
+  it('ingests a comment exactly once across a lost cursor (crash-and-replay dedup)', async () => {
+    const log = await createAndOpenGate();
+    await tracker.seedComment(FAKE_SURFACE_CARD, '/approve', REVIEWER);
+    await main(['tick', GATED_RUN_ID], deps());
+
+    // The comment was ingested once and the run completed.
+    const afterFirst = log.read();
+    expect(
+      afterFirst.filter((e) => e.type === 'command_received'),
+    ).toHaveLength(1);
+    expect(foldRun(afterFirst).status).toBe('completed');
+
+    // Simulate a lost cursor: the CLI tick wrote `.cursor.json` after ingesting,
+    // so the poll would normally skip `c1`. Delete it to force a re-poll from the
+    // beginning, exactly as a crashed/wiped sidecar would (ADR-0006). The comment
+    // is back in the read window — only the log-keyed dedup can stop a re-ingest.
+    const layout = resolveRunDir(runsRoot, GATED_RUN_ID);
+    expect(existsSync(layout.cursorSidecarPath)).toBe(true);
+    rmSync(layout.cursorSidecarPath);
+
+    // Re-tick: the poll re-reads `c1` from index 0, but dedup is keyed on the
+    // comment ids already in the log, not the cursor — so no second
+    // `command_received` is appended for the same comment id (AC2/AC5).
+    await main(['tick', GATED_RUN_ID], deps());
+
+    const afterReplay = log.read();
+    expect(
+      afterReplay.filter((e) => e.type === 'command_received'),
+    ).toHaveLength(1);
+    // The replay appended nothing at all: the surviving `command_received` (for
+    // comment `c1`) is byte-for-byte the one from the first ingest, not a new one.
+    expect(afterReplay).toEqual(afterFirst);
   });
 });
