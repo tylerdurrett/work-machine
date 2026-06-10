@@ -170,7 +170,7 @@ export async function tick(deps: TickDeps): Promise<void> {
       append({ type: 'step_dispatched', stepId: step.id, command });
 
       const result = await executor.run(
-        { id: step.id, command, produces: step.produces },
+        { type: 'script', id: step.id, command, produces: step.produces },
         { runDir },
       );
 
