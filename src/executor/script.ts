@@ -27,9 +27,19 @@ import type {
  *   artifacts }`, mapped by the harness to `step_succeeded`.
  * - command exits non-zero, or fails to spawn, or a declared artifact is
  *   missing afterward → `{ ok: false, error }`, mapped to `step_failed`.
+ * - a non-`script` resolved step → `{ ok: false, error }` without running
+ *   anything: this adapter only knows how to run shell commands, and an
+ *   executor's outcome is always a value, never a thrown error.
  */
 export const scriptExecutor: Executor = {
   async run(step: ResolvedStep, ctx: RunContext): Promise<ExecutorResult> {
+    if (step.type !== 'script') {
+      return {
+        ok: false,
+        error: `script executor cannot run '${step.type}' step "${step.id}"`,
+      };
+    }
+
     const exit = await runCommand(step.command, ctx.runDir);
     if (!exit.ok) {
       return { ok: false, error: exit.error };
